@@ -1,0 +1,110 @@
+#!/bin/bash
+exists()
+{
+  command -v "$1" >/dev/null 2>&1
+}
+if exists curl; then
+echo ''
+else
+  sudo apt update && sudo apt install curl -y < "/dev/null"
+fi
+bash_profile=$HOME/.bash_profile
+if [ -f "$bash_profile" ]; then
+    . $HOME/.bash_profile
+fi
+
+NODE=Cascadia
+NODE_HOME=$HOME/.cascadiad
+BINARY=cascadiad
+CHAIN_ID=cascadia_6102-1
+echo 'export CHAIN_ID='\"${CHAIN_ID}\" >> $HOME/.bash_profile
+
+if [ ! $VALIDATOR ]; then
+    read -p "Enter validator name: " VALIDATOR
+    echo 'export VALIDATOR='\"${VALIDATOR}\" >> $HOME/.bash_profile
+fi
+echo 'source $HOME/.bashrc' >> $HOME/.bash_profile
+source $HOME/.bash_profile
+sleep 1
+cd $HOME
+sudo apt update
+sudo apt install make clang pkg-config libssl-dev build-essential git jq ncdu bsdmainutils htop -y < "/dev/null"
+
+echo -e '\n\e[42mInstall Go\e[0m\n' && sleep 1
+cd $HOME
+if [ ! -f "/usr/local/go/bin/go" ]; then
+    VERSION=1.19.6
+    wget -O go.tar.gz https://go.dev/dl/go$VERSION.linux-amd64.tar.gz
+    sudo rm -rf /usr/local/go && sudo tar -C /usr/local -xzf go.tar.gz && rm go.tar.gz
+    echo 'export GOROOT=/usr/local/go' >> $HOME/.bash_profile
+    echo 'export GOPATH=$HOME/go' >> $HOME/.bash_profile
+    echo 'export GO111MODULE=on' >> $HOME/.bash_profile
+    echo 'export PATH=$PATH:/usr/local/go/bin:$HOME/go/bin' >> $HOME/.bash_profile && . $HOME/.bash_profile
+    go version
+fi
+
+echo -e '\n\e[42mInstall software\e[0m\n' && sleep 1
+#curl -L https://github.com/CascadiaFoundation/cascadia/releases/download/v0.1.1/cascadiad-v0.1.1-linux-amd64 -o cascadiad
+#sudo chmod u+x cascadiad
+#sudo cp cascadiad /usr/local/bin/cascadiad
+cd $HOME
+rm -rf cascadia
+git clone https://github.com/CascadiaFoundation/cascadia
+cd cascadia
+git checkout v0.1.2
+make build
+sudo mv build/cascadiad /usr/local/bin || exit
+sleep 1
+$BINARY init "$VALIDATOR" --chain-id $CHAIN_ID
+sed -i.bak -e "s/^minimum-gas-prices *=.*/minimum-gas-prices = \"0.0025aCC\"/" ~/.cascadiad/config/app.toml
+sed -i.bak -e "s/^persistent_peers *=.*/persistent_peers = \"$(curl  https://raw.githubusercontent.com/CascadiaFoundation/chain-configuration/master/testnet/persistent_peers.txt)\"/" ~/.cascadiad/config/config.toml
+pruning="custom"
+pruning_keep_recent="100"
+pruning_keep_every="0"
+pruning_interval="10"
+sed -i -e "s/^pruning *=.*/pruning = \"$pruning\"/" $NODE_HOME/config/app.toml
+sed -i -e "s/^pruning-keep-recent *=.*/pruning-keep-recent = \"$pruning_keep_recent\"/" $NODE_HOME/config/app.toml
+sed -i -e "s/^pruning-keep-every *=.*/pruning-keep-every = \"$pruning_keep_every\"/" $NODE_HOME/config/app.toml
+sed -i -e "s/^pruning-interval *=.*/pruning-interval = \"$pruning_interval\"/" $NODE_HOME/config/app.toml
+
+curl -LO https://github.com/CascadiaFoundation/chain-configuration/raw/master/testnet/genesis.json.gz
+gunzip genesis.json.gz
+mv genesis.json ~/.cascadiad/config/
+
+$BINARY tendermint unsafe-reset-all
+wget -O $HOME/.cascadiad/config/addrbook.json https://api.nodes.guru/cascadia_addrbook.json
+
+echo -e '\n\e[42mRunning\e[0m\n' && sleep 1
+echo -e '\n\e[42mCreating a service\e[0m\n' && sleep 1
+
+echo "[Unit]
+Description=$NODE Node
+After=network.target
+
+[Service]
+User=$USER
+Type=simple
+ExecStart=/usr/local/bin/$BINARY start --trace --log_level info --json-rpc.api eth,txpool,personal,net,debug,web3 --api.enable
+Restart=on-failure
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target" > $HOME/$BINARY.service
+sudo mv $HOME/$BINARY.service /etc/systemd/system
+sudo tee <<EOF >/dev/null /etc/systemd/journald.conf
+Storage=persistent
+EOF
+echo -e '\n\e[42mRunning a service\e[0m\n' && sleep 1
+sudo systemctl restart systemd-journald
+sudo systemctl daemon-reload
+sudo systemctl enable $BINARY
+sudo systemctl restart $BINARY
+
+echo -e '\n\e[42mCheck node status\e[0m\n' && sleep 1
+if [[ `service $BINARY status | grep active` =~ "running" ]]; then
+  echo -e "Your $NODE node \e[32minstalled and works\e[39m!"
+  echo -e "You can check node status by the command \e[7mservice $BINARY status\e[0m"
+  echo -e "Press \e[7mQ\e[0m for exit from status menu"
+else
+  echo -e "Your $NODE node \e[31mwas not installed correctly\e[39m, please reinstall."
+fi
